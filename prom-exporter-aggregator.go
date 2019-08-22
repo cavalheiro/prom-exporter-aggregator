@@ -4,6 +4,8 @@ import (
 	"os"
 	"fmt"
 	"flag"
+	"time"
+	"bytes"
 	"regexp"
 	"strings"
 	"net/http"
@@ -31,6 +33,7 @@ func assertNoError(e error, msg string) {
 func main() {
 
 	// Parse command line arguments
+	var port = flag.String("port", "9191", "Port to listen at")
 	var configFile = flag.String("config", DEFAULT_CONFIG_FILE, "Path to config file")
 	flag.Parse()
 	// Load configuration file
@@ -40,32 +43,34 @@ func main() {
 	err = yaml.Unmarshal([]byte(dat), &config)
 	assertNoError(err, "Invalid configuration file syntax")
 
-	// metrics := map[string]string{}
+	regex := regexp.MustCompile(`(?:(#\s(?:TYPE|HELP))\s)?(\w+)\s(.*)`)
 
-	r := regexp.MustCompile(`(?:(#\s(?:TYPE|HELP))\s)?(\w+)\s(.*)`)
-
-	for url, alias := range config {
-		response, err := http.Get(url)
-		logError(err)
-		if err == nil {
-			defer response.Body.Close()
-			contents, err := ioutil.ReadAll(response.Body)
+	http.HandleFunc("/metrics", func (w http.ResponseWriter, r *http.Request) {
+		var metrics bytes.Buffer
+		for url, alias := range config {
+			startTime := time.Now()
+			fmt.Printf("Querying URL %s ...", url)
+			response, err := http.Get(url)
 			logError(err)
-			if err == nil && (response.StatusCode == 200) {
-				for _, line := range strings.Split(string(contents),"\n") {
-					// fmt.Printf("%s\n", line)
-					result:= r.FindStringSubmatch(line)
-					if (result != nil) {
-						metric_name := fmt.Sprintf("%s_%s", alias, result[2])
-						reg := []string {result[1], metric_name, result[3]}
-						fmt.Printf("%s\n", strings.TrimSpace(strings.Join(reg[:], " ")))
+			if err == nil {
+				defer response.Body.Close()
+				contents, err := ioutil.ReadAll(response.Body)
+				logError(err)
+				if err == nil && (response.StatusCode == 200) {
+					for _, line := range strings.Split(string(contents),"\n") {
+						all_tokens:= regex.FindStringSubmatch(line)
+						if (all_tokens != nil) {
+							metric_name := fmt.Sprintf("%s_%s", alias, all_tokens[2])
+							wanted_tokens := []string {all_tokens[1], metric_name, all_tokens[3]}
+							metrics.WriteString(strings.TrimSpace(strings.Join(wanted_tokens, " ")) + "\n")
+						}
 					}
-					// for k, v := range result {
-					// 	fmt.Printf("%d. %s\n", k, v)
-					// }
 				}
 			}
+			duration := time.Since(startTime)
+			fmt.Printf("\tquery took: %s\n", duration)
 		}
-	}
-
+		fmt.Fprintf(w, metrics.String())
+	})
+	http.ListenAndServe(":" + *port, nil)
 }
