@@ -4,6 +4,7 @@ import (
 	"os"
 	"fmt"
 	"flag"
+	"sync"
 	"time"
 	"bytes"
 	"regexp"
@@ -15,17 +16,10 @@ import (
 
 const DEFAULT_CONFIG_FILE = "prom-exporter-aggregator.yml"
 
-// Log Error to Console
-func logError(e error, msg ...string) {
-	if e != nil {
-		fmt.Printf("ERROR: %s\nCaused by: %s\n", msg, e.Error())
-	}
-}
-
 // Fatal Error handler
 func assertNoError(e error, msg string) {
 	if e != nil {
-		logError(e, msg)
+		fmt.Printf("ERROR: %s. Cause: %s", msg, e.Error())
 		os.Exit(1)
 	}
 }
@@ -43,33 +37,39 @@ func main() {
 	err = yaml.Unmarshal([]byte(dat), &config)
 	assertNoError(err, "Invalid configuration file syntax")
 
+	var wg sync.WaitGroup
 	regex := regexp.MustCompile(`(?:(#\s(?:TYPE|HELP))\s)?(\w+)\s(.*)`)
 
 	http.HandleFunc("/metrics", func (w http.ResponseWriter, r *http.Request) {
 		var metrics bytes.Buffer
+		wg.Add(len(config))
 		for url, alias := range config {
-			startTime := time.Now()
-			fmt.Printf("Querying URL %s ...", url)
-			response, err := http.Get(url)
-			logError(err)
-			if err == nil {
-				defer response.Body.Close()
-				contents, err := ioutil.ReadAll(response.Body)
-				logError(err)
-				if err == nil && (response.StatusCode == 200) {
-					for _, line := range strings.Split(string(contents),"\n") {
-						all_tokens:= regex.FindStringSubmatch(line)
-						if (all_tokens != nil) {
-							metric_name := fmt.Sprintf("%s_%s", alias, all_tokens[2])
-							wanted_tokens := []string {all_tokens[1], metric_name, all_tokens[3]}
-							metrics.WriteString(strings.TrimSpace(strings.Join(wanted_tokens, " ")) + "\n")
+			go func(url string, alias string) {
+				defer wg.Done()
+				reqStartTime := time.Now()
+				response, err := http.Get(url)
+				if err != nil {
+					fmt.Printf("ERROR: Endpoint %s. Cause: %s", url, err.Error())
+				} else {
+					defer response.Body.Close()
+					contents, err := ioutil.ReadAll(response.Body)
+					if err != nil || response.StatusCode != 200 {
+						fmt.Printf("ERROR: Invalid response from %s\n",  url)
+					} else {
+						for _, line := range strings.Split(string(contents),"\n") {
+							all_tokens:= regex.FindStringSubmatch(line)
+							if (all_tokens != nil) {
+								metric_name := fmt.Sprintf("%s_%s", alias, all_tokens[2])
+								wanted_tokens := []string {all_tokens[1], metric_name, all_tokens[3]}							
+								metrics.WriteString(strings.TrimSpace(strings.Join(wanted_tokens, " ")) + "\n")
+							}
 						}
+						fmt.Printf("INFO: Query to endpoint %s took %s\n",  url, time.Since(reqStartTime))
 					}
 				}
-			}
-			duration := time.Since(startTime)
-			fmt.Printf("\tquery took: %s\n", duration)
+			}(url, alias)
 		}
+		wg.Wait()
 		fmt.Fprintf(w, metrics.String())
 	})
 	http.ListenAndServe(":" + *port, nil)
