@@ -1,17 +1,17 @@
 package main
 
 import (
-	"os"
-	"fmt"
-	"flag"
-	"sync"
-	"time"
 	"bytes"
+	"flag"
+	"fmt"
+	"gopkg.in/yaml.v2"
+	"io/ioutil"
+	"net/http"
+	"os"
 	"regexp"
 	"strings"
-	"net/http"
-	"io/ioutil"
-	"gopkg.in/yaml.v2"
+	"sync"
+	"time"
 )
 
 const DEFAULT_CONFIG_FILE = "prom-exporter-aggregator.yml"
@@ -27,7 +27,7 @@ func assertNoError(e error, msg string) {
 func main() {
 
 	// Parse command line arguments
-	var port = flag.String("port", "9191", "Port to listen at")
+	var port = flag.String("port", "9191", "Port to listen on")
 	var configFile = flag.String("config", DEFAULT_CONFIG_FILE, "Path to config file")
 	flag.Parse()
 	// Load configuration file
@@ -40,7 +40,7 @@ func main() {
 	var wg sync.WaitGroup
 	regex := regexp.MustCompile(`(?:(#\s(?:TYPE|HELP))\s)?(\w+)\s(.*)`)
 
-	http.HandleFunc("/metrics", func (w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
 		var metrics bytes.Buffer
 		wg.Add(len(config))
 		for url, alias := range config {
@@ -54,17 +54,17 @@ func main() {
 					defer response.Body.Close()
 					contents, err := ioutil.ReadAll(response.Body)
 					if err != nil || response.StatusCode != 200 {
-						fmt.Printf("ERROR: Invalid response from %s\n",  url)
+						fmt.Printf("ERROR: Invalid response from %s\n", url)
 					} else {
-						for _, line := range strings.Split(string(contents),"\n") {
-							all_tokens:= regex.FindStringSubmatch(line)
-							if (all_tokens != nil) {
+						for _, line := range strings.Split(string(contents), "\n") {
+							all_tokens := regex.FindStringSubmatch(line)
+							if all_tokens != nil {
 								metric_name := fmt.Sprintf("%s_%s", alias, all_tokens[2])
-								wanted_tokens := []string {all_tokens[1], metric_name, all_tokens[3]}							
+								wanted_tokens := []string{all_tokens[1], metric_name, all_tokens[3]}
 								metrics.WriteString(strings.TrimSpace(strings.Join(wanted_tokens, " ")) + "\n")
 							}
 						}
-						fmt.Printf("INFO: Query to endpoint %s took %s\n",  url, time.Since(reqStartTime))
+						fmt.Printf("INFO: Query to endpoint %s took %s\n", url, time.Since(reqStartTime))
 					}
 				}
 			}(url, alias)
@@ -72,5 +72,5 @@ func main() {
 		wg.Wait()
 		fmt.Fprintf(w, metrics.String())
 	})
-	http.ListenAndServe(":" + *port, nil)
+	http.ListenAndServe(":"+*port, nil)
 }
